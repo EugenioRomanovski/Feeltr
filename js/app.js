@@ -17,6 +17,9 @@ function loadSettings() {
 }
 const saved = loadSettings();
 
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+
 const state = {
   filter: saved.filter in FILTERS ? saved.filter : 'nn',
   format: saved.format in FORMATS ? saved.format : '3:4',
@@ -24,16 +27,21 @@ const state = {
   mode: [0, 1, 2].includes(saved.mode) ? saved.mode : 0,
   mix: typeof saved.mix === 'number' ? saved.mix : 0.5,
   facing: saved.facing === 'user' ? 'user' : 'environment',
+  // 'live': in-app viewfinder (getUserMedia). 'system': the phone's own camera app, which needs
+  // no permission — iOS home-screen apps re-ask for getUserMedia on every launch.
+  camMode: ['live', 'system'].includes(saved.camMode) ? saved.camMode : (isIOS && standalone ? 'system' : 'live'),
   stream: null,
+  sysShot: null, // last photo taken with the system camera
   still: null,   // imported photo used instead of the live camera
   shot1: null,   // first exposure while in multi-exposure mode
   busy: false,
+  loading: false, // decoding a system-camera photo
   screen: 'camera',
 };
 
 function persist() {
-  const { filter, format, mx, mode, mix, facing } = state;
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ filter, format, mx, mode, mix, facing })); } catch {}
+  const { filter, format, mx, mode, mix, facing, camMode } = state;
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ filter, format, mx, mode, mix, facing, camMode })); } catch {}
 }
 
 const el = {
@@ -41,6 +49,7 @@ const el = {
   flash: $('#flash'), mxBadge: $('#mxBadge'), mxPanel: $('#mxPanel'), mxReset: $('#mxReset'),
   mixRange: $('#mixRange'), shutter: $('#shutter'), btnMx: $('#btnMx'), btnFormat: $('#btnFormat'),
   btnFlip: $('#btnFlip'), btnImport: $('#btnImport'), fileInput: $('#fileInput'), stillChip: $('#stillChip'),
+  btnCamMode: $('#btnCamMode'), sysInput: $('#sysInput'),
   vfMessage: $('#vfMessage'), vfText: $('#vfText'), counter: $('#counter'),
   btnDiary: $('#btnDiary'), lastThumb: $('#lastThumb'), diaryIcon: $('#diaryIcon'),
   camera: $('#camera'), diary: $('#diary'), diaryList: $('#diaryList'), diaryDays: $('#diaryDays'), diaryEmpty: $('#diaryEmpty'),
@@ -60,9 +69,10 @@ try {
 }
 const uploaded = { A: null, B: null };
 
-// The current live source: imported still or camera video.
+// The current live source: imported still, system-camera photo or camera video.
 function live() {
   if (state.still) return state.still;
+  if (state.camMode === 'system') return state.sysShot;
   const v = el.video;
   if (state.stream && state.stream.getVideoTracks()[0]?.enabled && v.readyState >= 2 && v.videoWidth) {
     return { el: v, w: v.videoWidth, h: v.videoHeight, mirror: state.facing === 'user', dynamic: true };
@@ -150,7 +160,7 @@ function pauseCamera() {
 }
 
 function resumeCamera() {
-  if (!cameraLive()) { startCamera(); return; }
+  if (state.camMode === 'system' || !cameraLive()) { startCamera(); return; }
   state.stream.getVideoTracks().forEach((t) => { t.enabled = true; });
   el.video.play().catch(() => {});
   hideMessage();
@@ -159,8 +169,13 @@ function resumeCamera() {
 async function startCamera() {
   stopCamera();
   const token = camToken;
+  if (state.camMode === 'system') {
+    if (state.sysShot) hideMessage();
+    else showMessage('Снимайте встроенной камерой — без запросов доступа. Плёнка и мультиэкспозиция применятся сразу после снимка.', { system: true, live: true });
+    return;
+  }
   if (!navigator.mediaDevices?.getUserMedia) {
-    showMessage('Камера недоступна в этом браузере. Откройте Feeltr по HTTPS или выберите фото из галереи.', false);
+    showMessage('Камера недоступна в этом браузере. Снимайте встроенной камерой или выберите фото из галереи.', { system: true });
     return;
   }
   try {
@@ -177,15 +192,19 @@ async function startCamera() {
     if (token !== camToken) return;
     console.warn(e);
     showMessage(e.name === 'NotAllowedError'
-      ? 'Feeltr нужен доступ к камере, чтобы снимать.'
-      : 'Не удалось запустить камеру.', true);
+      ? 'Живому видоискателю нужен доступ к камере. Можно снимать встроенной камерой — ей разрешение не нужно.'
+      : 'Не удалось запустить камеру.', { retry: true, system: true });
   }
 }
 
-function showMessage(text, canRetry) {
+function showMessage(text, { retry = false, system = false, live = false } = {}) {
   if (state.still || state.shot1) return;
   el.vfText.textContent = text;
-  $('#vfRetry').hidden = !canRetry;
+  $('#vfRetry').hidden = !retry;
+  $('#vfSystem').hidden = !system;
+  $('#vfLive').hidden = !live;
+  // The first visible action is the primary one.
+  $('#vfSystem').classList.toggle('primary', !retry);
   el.vfMessage.hidden = false;
   el.frame.hidden = true;
 }
@@ -241,7 +260,35 @@ function flash() {
   navigator.vibrate?.(12);
 }
 
-async function shoot() {
+function shoot() {
+  if (state.busy || state.loading || !previewR) return;
+  if (state.camMode === 'system' && !state.still) {
+    el.sysInput.setAttribute('capture', state.facing === 'user' ? 'user' : 'environment');
+    el.sysInput.click();
+    return;
+  }
+  capture();
+}
+
+async function onSystemShot(file) {
+  if (!file || state.busy || state.loading) return;
+  state.loading = true;
+  el.shutter.classList.add('busy');
+  try {
+    state.sysShot = await loadImage(file);
+  } catch (e) {
+    console.error(e);
+    toast('Не удалось открыть снимок');
+    el.shutter.classList.remove('busy');
+    return;
+  } finally {
+    state.loading = false;
+  }
+  hideMessage();
+  await capture();
+}
+
+async function capture() {
   if (state.busy || !previewR) return;
   const L = live();
   if (!L) { toast('Камера ещё не готова'); return; }
@@ -251,9 +298,12 @@ async function shoot() {
   try {
     if (state.mx && !state.shot1) {
       state.shot1 = snapshot(L);
+      state.sysShot = null;
       if (state.still) { state.still = null; resumeCamera(); }
       updateUI();
-      toast('Первая экспозиция есть. Наведите камеру на второй сюжет');
+      toast(state.camMode === 'system'
+        ? 'Первая экспозиция есть. Снимите второй кадр'
+        : 'Первая экспозиция есть. Наведите камеру на второй сюжет');
       return;
     }
     const f = frame();
@@ -287,13 +337,17 @@ async function shoot() {
 
 /* ---------------- Import ---------------- */
 
+async function loadImage(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const src = snapshot({ el: bmp, w: bmp.width, h: bmp.height, mirror: false });
+  bmp.close?.();
+  return src;
+}
+
 async function importFile(file) {
   if (!file) return;
   try {
-    const bmp = await createImageBitmap(file);
-    const src = snapshot({ el: bmp, w: bmp.width, h: bmp.height, mirror: false });
-    bmp.close?.();
-    state.still = src;
+    state.still = await loadImage(file);
     pauseCamera();
     hideMessage();
     updateUI();
@@ -338,6 +392,10 @@ function updateUI() {
   el.filterSeg.style.setProperty('--i', Object.keys(FILTERS).indexOf(state.filter));
   el.modeSeg.style.setProperty('--i', state.mode);
   el.btnFormat.textContent = state.format;
+  el.btnCamMode.setAttribute('aria-pressed', String(state.camMode === 'system'));
+  el.btnCamMode.setAttribute('aria-label', state.camMode === 'system'
+    ? 'Сейчас: встроенная камера. Включить живой видоискатель'
+    : 'Сейчас: живой видоискатель. Снимать встроенной камерой');
   el.btnMx.setAttribute('aria-pressed', String(state.mx));
   el.mxPanel.hidden = !state.mx;
   el.mxBadge.hidden = !state.mx;
@@ -576,12 +634,19 @@ el.btnMx.addEventListener('click', () => {
   state.mx = !state.mx;
   if (!state.mx) state.shot1 = null;
   updateUI();
+  showIntroIfEmpty();
   toast(state.mx ? 'Мультиэкспозиция: два кадра в одном' : 'Мультиэкспозиция выключена');
 });
 el.mxReset.addEventListener('click', () => {
   state.shot1 = null;
   updateUI();
+  showIntroIfEmpty();
 });
+
+// With the system camera there is nothing to show until the first photo is taken.
+function showIntroIfEmpty() {
+  if (state.camMode === 'system' && !frame()) startCamera();
+}
 
 el.btnFormat.addEventListener('click', () => {
   const keys = Object.keys(FORMATS);
@@ -589,9 +654,33 @@ el.btnFormat.addEventListener('click', () => {
   updateUI();
 });
 
+function setCamMode(mode) {
+  state.camMode = mode;
+  state.sysShot = null;
+  updateUI();
+  if (mode === 'system') toast('Встроенная камера: без запросов доступа');
+  else toast('Живой видоискатель');
+  if (!state.still) startCamera();
+}
+
+el.btnCamMode.addEventListener('click', () => setCamMode(state.camMode === 'system' ? 'live' : 'system'));
+$('#vfSystem').addEventListener('click', () => {
+  if (state.camMode !== 'system') setCamMode('system');
+  shoot();
+});
+$('#vfLive').addEventListener('click', () => setCamMode('live'));
+el.sysInput.addEventListener('change', () => {
+  onSystemShot(el.sysInput.files[0]);
+  el.sysInput.value = '';
+});
+
 el.btnFlip.addEventListener('click', () => {
   state.facing = state.facing === 'user' ? 'environment' : 'user';
   persist();
+  if (state.camMode === 'system') {
+    toast(state.facing === 'user' ? 'Фронтальная камера' : 'Основная камера');
+    return;
+  }
   if (state.still) state.still = null;
   updateUI();
   startCamera();
@@ -679,8 +768,6 @@ $('#btnInstall').addEventListener('click', async () => {
   installEvent = null;
   $('#btnInstall').hidden = true;
 });
-const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
 let tipDismissed = false;
 try { tipDismissed = localStorage.getItem('feeltr:iosTip') === '1'; } catch {}
 if (isIOS && !standalone && !tipDismissed) $('#iosTip').hidden = false;

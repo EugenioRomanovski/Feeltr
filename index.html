@@ -35,7 +35,9 @@
         <p id="vfText">Нужен доступ к камере</p>
         <div class="vf-actions">
           <button id="vfRetry" class="btn primary">Разрешить камеру</button>
+          <button id="vfSystem" class="btn">Снять встроенной камерой</button>
           <button id="vfImport" class="btn">Выбрать фото</button>
+          <button id="vfLive" class="link-btn">Включить живой видоискатель</button>
         </div>
       </div>
       <video id="video" playsinline muted autoplay></video>
@@ -45,6 +47,10 @@
       <button id="btnFormat" class="glass capsule mono" aria-label="Формат кадра">3:4</button>
       <div id="counter" class="glass capsule counter mono">FEELTR</div>
       <div class="glass capsule group">
+        <button id="btnCamMode" class="icon-btn mode-btn" aria-pressed="false">
+          <svg class="ic-live" viewBox="0 0 24 24"><path d="M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="ic-system" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="3"/><circle cx="12" cy="9" r="2.4"/><path d="M10.5 18h3"/></svg>
+        </button>
         <button id="btnImport" class="icon-btn" aria-label="Взять фото из галереи">
           <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-5 4 4 2.5-2.5L20 17"/></svg>
         </button>
@@ -87,6 +93,7 @@
       </div>
     </footer>
     <input id="fileInput" type="file" accept="image/*" hidden>
+    <input id="sysInput" type="file" accept="image/*" capture="environment" hidden>
   </main>
 
   <!-- Diary -->

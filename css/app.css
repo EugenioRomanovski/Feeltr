@@ -102,6 +102,8 @@ button.glass:active, .glass button:active { transform: scale(0.94); }
 .group { display: flex; align-items: center; padding: 0 3px; }
 .icon-btn { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; transition: transform 0.3s var(--spring); }
 .icon-btn svg { width: 22px; height: 22px; }
+.mode-btn .ic-system, .mode-btn[aria-pressed="true"] .ic-live { display: none; }
+.mode-btn[aria-pressed="true"] .ic-system { display: block; }
 
 .mx-badge {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
