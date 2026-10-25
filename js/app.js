@@ -43,7 +43,8 @@ const el = {
   btnFlip: $('#btnFlip'), btnImport: $('#btnImport'), fileInput: $('#fileInput'), stillChip: $('#stillChip'),
   vfMessage: $('#vfMessage'), vfText: $('#vfText'), counter: $('#counter'),
   btnDiary: $('#btnDiary'), lastThumb: $('#lastThumb'), diaryIcon: $('#diaryIcon'),
-  camera: $('#camera'), diary: $('#diary'), diaryList: $('#diaryList'), diaryEmpty: $('#diaryEmpty'),
+  camera: $('#camera'), diary: $('#diary'), diaryList: $('#diaryList'), diaryDays: $('#diaryDays'), diaryEmpty: $('#diaryEmpty'),
+  filterSeg: $('#filterSeg'), modeSeg: $('#modeSeg'),
   diaryCount: $('#diaryCount'), viewer: $('#viewer'), viewerImg: $('#viewerImg'), viewerMeta: $('#viewerMeta'),
   viewerNote: $('#viewerNote'), viewerStage: $('#viewerStage'), toast: $('#toast'),
 };
@@ -245,6 +246,7 @@ async function shoot() {
   const L = live();
   if (!L) { toast('Камера ещё не готова'); return; }
   state.busy = true;
+  el.shutter.classList.add('busy');
   flash();
   try {
     if (state.mx && !state.shot1) {
@@ -279,6 +281,7 @@ async function shoot() {
     toast('Не получилось сохранить кадр');
   } finally {
     state.busy = false;
+    el.shutter.classList.remove('busy');
   }
 }
 
@@ -322,11 +325,18 @@ async function refreshCounter() {
   el.counter.textContent = `№ ${String(n + 1).padStart(3, '0')}`;
 }
 
+function setRangeFill(input) {
+  const { min, max, value } = input;
+  input.style.setProperty('--p', `${((value - min) / (max - min)) * 100}%`);
+}
+
 function updateUI() {
   document.querySelectorAll('.filter-chip').forEach((b) =>
     b.setAttribute('aria-checked', String(b.dataset.filter === state.filter)));
-  document.querySelectorAll('.segmented button').forEach((b) =>
+  document.querySelectorAll('[data-mode]').forEach((b) =>
     b.setAttribute('aria-checked', String(Number(b.dataset.mode) === state.mode)));
+  el.filterSeg.style.setProperty('--i', Object.keys(FILTERS).indexOf(state.filter));
+  el.modeSeg.style.setProperty('--i', state.mode);
   el.btnFormat.textContent = state.format;
   el.btnMx.setAttribute('aria-pressed', String(state.mx));
   el.mxPanel.hidden = !state.mx;
@@ -336,6 +346,7 @@ function updateUI() {
   el.shutter.classList.toggle('second', !!state.shot1);
   el.stillChip.hidden = !state.still;
   el.mixRange.value = Math.round(state.mix * 100);
+  setRangeFill(el.mixRange);
   persist();
 }
 
@@ -344,10 +355,9 @@ function updateUI() {
 const monthFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' });
 const weekdayFmt = new Intl.DateTimeFormat('ru-RU', { weekday: 'long' });
 
-// "октября 2025, суббота" — genitive month name comes only with a day number.
-function dayLabel(d, withYear) {
-  const month = monthFmt.formatToParts(d).find((x) => x.type === 'month').value;
-  return `${month}${withYear ? ` ${d.getFullYear()}` : ''}, ${weekdayFmt.format(d)}`;
+// "25 октября" (+ year when not the current one); weekday goes on its own line.
+function dayTitle(d, withYear) {
+  return `${monthFmt.format(d)}${withYear ? ` ${d.getFullYear()}` : ''}`;
 }
 const timeFmt = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
 const fullFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -369,7 +379,7 @@ async function renderDiary() {
   const n = diaryItems.length;
   el.diaryCount.textContent = n ? `${n} ${plural(n, 'кадр', 'кадра', 'кадров')}` : '';
   el.diaryEmpty.hidden = n > 0;
-  el.diaryList.hidden = n === 0;
+  el.diaryDays.hidden = n === 0;
 
   const year = new Date().getFullYear();
   const frag = document.createDocumentFragment();
@@ -385,10 +395,10 @@ async function renderDiary() {
       const h = document.createElement('h2');
       const num = document.createElement('span');
       num.className = 'd-num';
-      num.textContent = d.getDate();
+      num.textContent = dayTitle(d, d.getFullYear() !== year);
       const rest = document.createElement('span');
       rest.className = 'd-rest';
-      rest.textContent = dayLabel(d, d.getFullYear() !== year);
+      rest.textContent = weekdayFmt.format(d);
       h.append(num, rest);
       grid = document.createElement('div');
       grid.className = 'grid';
@@ -422,10 +432,11 @@ async function renderDiary() {
     }
     grid.append(b);
   }
-  el.diaryList.replaceChildren(frag);
+  el.diaryDays.replaceChildren(frag);
 }
 
 function showScreen(name) {
+  el.toast.classList.remove('show');
   state.screen = name === 'camera' ? 'camera' : 'diary';
   el.camera.hidden = name !== 'camera';
   el.diary.hidden = name === 'camera';
@@ -551,12 +562,13 @@ document.querySelectorAll('.filter-chip').forEach((b) => b.addEventListener('cli
   state.filter = b.dataset.filter;
   updateUI();
 }));
-document.querySelectorAll('.segmented button').forEach((b) => b.addEventListener('click', () => {
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
   state.mode = Number(b.dataset.mode);
   updateUI();
 }));
 el.mixRange.addEventListener('input', () => {
   state.mix = Number(el.mixRange.value) / 100;
+  setRangeFill(el.mixRange);
   persist();
 });
 
@@ -597,6 +609,9 @@ el.stillChip.addEventListener('click', clearStill);
 
 el.btnDiary.addEventListener('click', () => openDiary());
 $('#diaryBack').addEventListener('click', () => history.back());
+el.diaryList.addEventListener('scroll', () => {
+  el.diary.classList.toggle('scrolled', el.diaryList.scrollTop > 28);
+}, { passive: true });
 el.diaryList.addEventListener('click', (e) => {
   const b = e.target.closest('.print');
   if (b) openViewer(b.dataset.id);
