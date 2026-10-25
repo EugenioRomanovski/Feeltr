@@ -1,5 +1,5 @@
 // Bump VERSION on every deploy so clients pick up new files.
-const VERSION = 'feeltr-v1';
+const VERSION = 'feeltr-v2';
 const ASSETS = [
   '/',
   '/index.html',

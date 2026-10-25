@@ -63,7 +63,7 @@ const uploaded = { A: null, B: null };
 function live() {
   if (state.still) return state.still;
   const v = el.video;
-  if (state.stream && v.readyState >= 2 && v.videoWidth) {
+  if (state.stream && state.stream.getVideoTracks()[0]?.enabled && v.readyState >= 2 && v.videoWidth) {
     return { el: v, w: v.videoWidth, h: v.videoHeight, mirror: state.facing === 'user', dynamic: true };
   }
   return null;
@@ -136,6 +136,23 @@ function stopCamera() {
   state.stream?.getTracks().forEach((t) => t.stop());
   state.stream = null;
   el.video.srcObject = null;
+}
+
+// Pausing keeps the granted stream alive: browsers (iOS in particular) may ask for
+// permission again on every new getUserMedia call, so we request the camera once.
+function cameraLive() {
+  return state.stream?.getVideoTracks().some((t) => t.readyState === 'live');
+}
+
+function pauseCamera() {
+  state.stream?.getVideoTracks().forEach((t) => { t.enabled = false; });
+}
+
+function resumeCamera() {
+  if (!cameraLive()) { startCamera(); return; }
+  state.stream.getVideoTracks().forEach((t) => { t.enabled = true; });
+  el.video.play().catch(() => {});
+  hideMessage();
 }
 
 async function startCamera() {
@@ -232,7 +249,7 @@ async function shoot() {
   try {
     if (state.mx && !state.shot1) {
       state.shot1 = snapshot(L);
-      if (state.still) { state.still = null; if (!state.stream) startCamera(); }
+      if (state.still) { state.still = null; resumeCamera(); }
       updateUI();
       toast('Первая экспозиция есть. Наведите камеру на второй сюжет');
       return;
@@ -274,7 +291,7 @@ async function importFile(file) {
     const src = snapshot({ el: bmp, w: bmp.width, h: bmp.height, mirror: false });
     bmp.close?.();
     state.still = src;
-    stopCamera();
+    pauseCamera();
     hideMessage();
     updateUI();
   } catch (e) {
@@ -286,7 +303,7 @@ async function importFile(file) {
 function clearStill() {
   state.still = null;
   updateUI();
-  startCamera();
+  resumeCamera();
 }
 
 /* ---------------- UI state ---------------- */
@@ -414,9 +431,9 @@ function showScreen(name) {
   el.diary.hidden = name === 'camera';
   el.viewer.hidden = name !== 'viewer';
   if (name === 'camera') {
-    if (!state.still && !state.stream) startCamera();
+    if (!state.still) resumeCamera();
   } else {
-    stopCamera();
+    pauseCamera();
   }
 }
 
@@ -628,8 +645,8 @@ window.addEventListener('popstate', (e) => {
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { stopCamera(); flushNote(); }
-  else if (state.screen === 'camera' && !state.still) startCamera();
+  if (document.hidden) { pauseCamera(); flushNote(); }
+  else if (state.screen === 'camera' && !state.still) resumeCamera();
 });
 
 /* ---------------- Install ---------------- */
