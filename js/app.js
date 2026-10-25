@@ -1,12 +1,9 @@
 import { Renderer, coverRect } from './renderer.js';
 import { db } from './db.js';
+import { RECIPES, RECIPE_BY_ID } from './recipes.js';
 
 const $ = (s) => document.querySelector(s);
 
-const FILTERS = {
-  nn: { id: 0, name: 'Nostalgic Neg.' },
-  mono: { id: 1, name: 'Mono +R' },
-};
 const MODES = ['Плёнка', 'Экран', 'Светлее'];
 const FORMATS = { '3:4': 3 / 4, '2:3': 2 / 3, '1:1': 1 };
 const MAX_SIDE = 4096;
@@ -21,7 +18,7 @@ const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
 
 const state = {
-  filter: saved.filter in FILTERS ? saved.filter : 'nn',
+  filter: saved.filter in RECIPE_BY_ID ? saved.filter : 'nn',
   format: saved.format in FORMATS ? saved.format : '3:4',
   mx: !!saved.mx,
   mode: [0, 1, 2].includes(saved.mode) ? saved.mode : 0,
@@ -97,7 +94,7 @@ function params(f, seed) {
     hasB: !!f.B,
     mode: state.mode,
     mix: state.mix,
-    filter: FILTERS[state.filter].id,
+    look: RECIPE_BY_ID[state.filter].look,
     seed,
   };
 }
@@ -389,7 +386,6 @@ function updateUI() {
     b.setAttribute('aria-checked', String(b.dataset.filter === state.filter)));
   document.querySelectorAll('[data-mode]').forEach((b) =>
     b.setAttribute('aria-checked', String(Number(b.dataset.mode) === state.mode)));
-  el.filterSeg.style.setProperty('--i', Object.keys(FILTERS).indexOf(state.filter));
   el.modeSeg.style.setProperty('--i', state.mode);
   el.btnFormat.textContent = state.format;
   el.btnCamMode.setAttribute('aria-pressed', String(state.camMode === 'system'));
@@ -526,7 +522,7 @@ async function showPhoto(id) {
   viewerUrl = URL.createObjectURL(p.blob);
   el.viewerImg.src = viewerUrl;
   const d = new Date(p.createdAt);
-  const tags = [FILTERS[p.filter]?.name ?? p.filter];
+  const tags = [RECIPE_BY_ID[p.filter]?.name ?? p.filter];
   if (p.mx) tags.push(`MX · ${MODES[p.mode] ?? ''}`.trim());
   el.viewerMeta.innerHTML = '';
   const title = document.createElement('div');
@@ -616,10 +612,33 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && state.screen === 'camera' && el.viewer.hidden) { e.preventDefault(); shoot(); }
 });
 
-document.querySelectorAll('.filter-chip').forEach((b) => b.addEventListener('click', () => {
+// Film strip: one chip per recipe.
+for (const r of RECIPES) {
+  const b = document.createElement('button');
+  b.className = 'filter-chip';
+  b.dataset.filter = r.id;
+  b.setAttribute('role', 'radio');
+  const sw = document.createElement('span');
+  sw.className = 'swatch';
+  sw.style.background = r.swatch;
+  b.append(sw, r.name);
+  el.filterSeg.append(b);
+}
+el.filterSeg.addEventListener('click', (e) => {
+  const b = e.target.closest('.filter-chip');
+  if (!b) return;
   state.filter = b.dataset.filter;
   updateUI();
-}));
+  revealFilter();
+});
+
+function revealFilter(smooth = true) {
+  const b = el.filterSeg.querySelector(`[data-filter="${state.filter}"]`);
+  if (!b) return;
+  const strip = el.filterSeg;
+  const left = b.offsetLeft - (strip.clientWidth - b.offsetWidth) / 2;
+  strip.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
+}
 document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
   state.mode = Number(b.dataset.mode);
   updateUI();
@@ -784,6 +803,7 @@ navigator.storage?.persist?.();
 /* ---------------- Boot ---------------- */
 
 updateUI();
+revealFilter(false);
 refreshCounter();
 db.latest().then((p) => setLastThumb(p?.thumb)).catch(() => {});
 history.replaceState(null, '');

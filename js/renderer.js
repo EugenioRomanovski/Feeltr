@@ -23,10 +23,22 @@ uniform vec4 u_rectB;
 uniform float u_hasB;
 uniform int u_mode;       // 0 film (additive), 1 screen, 2 lighten
 uniform float u_mix;      // weight of the second exposure
-uniform int u_filter;     // 0 Nostalgic Neg., 1 Monochrome +R
 uniform float u_seed;
 uniform vec2 u_res;
 uniform float u_grain;    // grain cell size in px
+
+// Recipe (see recipes.js)
+uniform int u_base;       // 0 Nostalgic Neg., 1 Classic Neg., 2 Monochrome +R
+uniform vec3 u_wb;        // white balance gains
+uniform vec2 u_tone;      // highlight, shadow (Fujifilm units)
+uniform float u_color;    // colour (Fujifilm units)
+uniform vec2 u_chrome;    // Color Chrome Effect, Color Chrome FX Blue (0 off, 1 weak, 2 strong)
+uniform vec2 u_grainFx;   // grain amount, grain size
+uniform float u_exp;      // exposure compensation, EV
+uniform float u_dr;       // highlight roll-off strength (DR100..DR400)
+uniform float u_clarity;  // Fujifilm clarity units
+uniform float u_halation;
+uniform float u_vignette;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
@@ -59,15 +71,21 @@ vec3 exposure(vec2 uv) {
 float shoulderF(float x) {
   float p = 0.68;
   float u = clamp((x - p) / (1.0 - p), 0.0, 1.0);
-  return x < p ? x : p + (x - p) * (1.0 - 0.32 * u);
+  return x < p ? x : p + (x - p) * (1.0 - u_dr * u);
 }
 vec3 shoulder(vec3 c) { return vec3(shoulderF(c.r), shoulderF(c.g), shoulderF(c.b)); }
 vec3 saturate3(vec3 c, float s) { return mix(vec3(dot(c, LUMA)), c, s); }
 
-// Nostalgic Negative: warm WB, soft highlight roll-off, amber highlights,
-// rich shadows, Color Chrome Effect strong, weak grain.
+// Fujifilm Highlight / Shadow tone: positive = harder, negative = softer.
+vec3 toneHS(vec3 c) {
+  float l = dot(c, LUMA);
+  float hi = smoothstep(0.4, 1.0, l) * (1.0 - l) * 4.0;
+  float lo = (1.0 - smoothstep(0.0, 0.5, l)) * l * 4.0;
+  return c + c / max(l, 1e-3) * (u_tone.x * 0.022 * hi - u_tone.y * 0.03 * lo);
+}
+
+// Nostalgic Neg.: soft highlight roll-off, amber highlights, rich shadows.
 vec3 nostalgicNeg(vec3 c) {
-  c *= vec3(1.045, 1.0, 0.915);
   vec3 s = c * c * (3.0 - 2.0 * c);
   c = mix(c, s, 0.22);
   c = shoulder(c);
@@ -82,10 +100,31 @@ vec3 nostalgicNeg(vec3 c) {
   float gd = clamp(c.g - max(c.r, c.b), 0.0, 1.0);
   c.r += gd * 0.25;
   c.b -= gd * 0.10;
-
-  float chroma = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
-  c *= 1.0 - 0.14 * smoothstep(0.15, 0.6, chroma);
   return c;
+}
+
+// Classic Neg.: hard contrast, cyan-leaning shadows, warm highlights,
+// olive greens and teal blues — the Superia-like snapshot look.
+vec3 classicNeg(vec3 c) {
+  vec3 s = c * c * (3.0 - 2.0 * c);
+  c = mix(c, s, 0.42);
+  c = shoulder(c);
+  c = mix(vec3(0.03, 0.04, 0.045), vec3(1.0, 0.985, 0.96), c);
+
+  float l = dot(c, LUMA);
+  float hi = smoothstep(0.5, 0.95, l);
+  float lo = 1.0 - smoothstep(0.02, 0.45, l);
+  c += vec3(-0.025, 0.004, 0.02) * lo;
+  c += vec3(0.024, -0.002, -0.012) * hi;
+
+  float gd = clamp(c.g - max(c.r, c.b), 0.0, 1.0);
+  c.r += gd * 0.18;
+  c.g -= gd * 0.12;
+  float bd = clamp(c.b - max(c.r, c.g), 0.0, 1.0);
+  c.g += bd * 0.22;
+  float rd = clamp(c.r - max(c.g, c.b), 0.0, 1.0);
+  c.b += rd * 0.06;
+  return saturate3(c, 0.88);
 }
 
 // Monochrome with a red filter: darker skies and foliage, luminous skin.
@@ -115,32 +154,48 @@ float vnoise(vec2 p) {
 }
 
 void main() {
-  vec3 lin = exposure(v_uv);
+  float ev = exp2(u_exp);
+  vec3 lin = exposure(v_uv) * ev;
 
-  if (u_filter == 0) {
-    // Halation: red-orange glow bleeding from bright areas.
-    vec2 px = (u_res.y * 0.006) / u_res;
-    float glow = 0.0;
-    for (int i = 0; i < 8; i++) {
-      float ang = float(i) * 0.785398;
-      vec3 t = exposure(v_uv + vec2(cos(ang), sin(ang)) * px);
-      glow += max(dot(t, LUMA) - 0.7, 0.0);
-    }
-    lin += vec3(1.0, 0.38, 0.16) * glow * 0.09;
+  // A ring of nearby samples drives halation and clarity (local contrast).
+  vec2 px = (u_res.y * 0.006) / u_res;
+  float glow = 0.0;
+  vec3 near = vec3(0.0);
+  for (int i = 0; i < 8; i++) {
+    float ang = float(i) * 0.785398;
+    vec3 t = exposure(v_uv + vec2(cos(ang), sin(ang)) * px) * ev;
+    glow += max(dot(t, LUMA) - 0.7, 0.0);
+    near += t;
   }
+  near /= 8.0;
+  lin += vec3(1.0, 0.38, 0.16) * glow * u_halation;
 
   vec3 c = clamp(toGamma(lin), 0.0, 1.0);
-  c = u_filter == 1 ? monoRed(c) : nostalgicNeg(c);
+  c = clamp(c + (c - toGamma(near)) * u_clarity * 0.12, 0.0, 1.0);
+
+  if (u_base == 2) {
+    c = monoRed(c);
+  } else {
+    c = clamp(c * u_wb, 0.0, 1.0);
+    c = u_base == 1 ? classicNeg(c) : nostalgicNeg(c);
+    c = toneHS(c);
+    c = saturate3(c, 1.0 + u_color * 0.07);
+
+    float mx = max(c.r, max(c.g, c.b));
+    float chroma = mx - min(c.r, min(c.g, c.b));
+    c *= 1.0 - u_chrome.x * 0.07 * smoothstep(0.15, 0.6, chroma);
+    float blue = clamp((c.b - max(c.r, c.g)) * 3.0, 0.0, 1.0);
+    c *= 1.0 - u_chrome.y * 0.08 * blue;
+  }
 
   vec2 q = (v_uv - 0.5) * 2.0;
-  float vig = smoothstep(0.45, 1.45, length(q));
-  c *= 1.0 - vig * (u_filter == 1 ? 0.30 : 0.22);
+  c *= 1.0 - smoothstep(0.45, 1.45, length(q)) * u_vignette;
 
   vec2 p = v_uv * u_res;
-  float g = vnoise(p / u_grain) + vnoise(p / (u_grain * 0.6) + 17.0) - 1.0;
+  float gs = u_grain * u_grainFx.y;
+  float g = vnoise(p / gs) + vnoise(p / (gs * 0.6) + 17.0) - 1.0;
   float l = dot(c, LUMA);
-  float amt = (u_filter == 1 ? 0.085 : 0.05) * (0.35 + 0.65 * (1.0 - abs(2.0 * l - 1.0)));
-  c += g * amt;
+  c += g * u_grainFx.x * (0.35 + 0.65 * (1.0 - abs(2.0 * l - 1.0)));
 
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
@@ -182,7 +237,8 @@ export class Renderer {
 
     this.u = {};
     for (const name of ['u_texA', 'u_texB', 'u_rectA', 'u_rectB', 'u_hasB', 'u_mode', 'u_mix',
-      'u_filter', 'u_seed', 'u_res', 'u_grain']) {
+      'u_seed', 'u_res', 'u_grain', 'u_base', 'u_wb', 'u_tone', 'u_color', 'u_chrome', 'u_grainFx',
+      'u_exp', 'u_dr', 'u_clarity', 'u_halation', 'u_vignette']) {
       this.u[name] = gl.getUniformLocation(prog, name);
     }
     gl.uniform1i(this.u.u_texA, 0);
@@ -222,7 +278,8 @@ export class Renderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
   }
 
-  draw({ rectA, rectB = [0, 0, 1, 1], hasB = false, mode = 0, mix = 0.5, filter = 0, seed = 0 }) {
+  // `look` is a compiled recipe from recipes.js.
+  draw({ rectA, rectB = [0, 0, 1, 1], hasB = false, mode = 0, mix = 0.5, look, seed = 0 }) {
     const gl = this.gl;
     const { width, height } = this.canvas;
     gl.viewport(0, 0, width, height);
@@ -231,7 +288,17 @@ export class Renderer {
     gl.uniform1f(this.u.u_hasB, hasB ? 1 : 0);
     gl.uniform1i(this.u.u_mode, mode);
     gl.uniform1f(this.u.u_mix, mix);
-    gl.uniform1i(this.u.u_filter, filter);
+    gl.uniform1i(this.u.u_base, look.base);
+    gl.uniform3fv(this.u.u_wb, look.wb);
+    gl.uniform2fv(this.u.u_tone, look.tone);
+    gl.uniform1f(this.u.u_color, look.color);
+    gl.uniform2fv(this.u.u_chrome, look.chrome);
+    gl.uniform2fv(this.u.u_grainFx, look.grain);
+    gl.uniform1f(this.u.u_exp, look.exp);
+    gl.uniform1f(this.u.u_dr, look.dr);
+    gl.uniform1f(this.u.u_clarity, look.clarity);
+    gl.uniform1f(this.u.u_halation, look.halation);
+    gl.uniform1f(this.u.u_vignette, look.vignette);
     gl.uniform1f(this.u.u_seed, seed);
     gl.uniform2f(this.u.u_res, width, height);
     gl.uniform1f(this.u.u_grain, Math.max(1, Math.min(width, height) / 1100) * 1.15);
